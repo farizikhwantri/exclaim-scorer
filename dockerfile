@@ -29,6 +29,9 @@ COPY config /app/config
 # COPY services /app/services
 # COPY data /app/data
 
+COPY openapi.yaml /app/openapi.yaml
+ENV OPENAPI_YAML_PATH=/app/openapi.yaml
+
 # Expose API port
 EXPOSE 8000
 

@@ -1,0 +1,139 @@
+{
+    "model_type": "decoder",
+    "model_name": "gpt2",
+    "task": "score_claims",
+    "document": 
+    {
+        "MainClaim": {
+            "description": "The system complies with the GDPR requirement R28: MD8 for notifying personal data breaches.",
+            "SubClaims": [
+                {
+                    "SubClaim1": {
+                        "description": "The notification includes the nature of the personal data breach.",
+                        "ArgumentClaims": [
+                            {
+                                "ArgumentClaim": {
+                                    "description": "The argument supporting the inclusion of the nature of the personal data breach in the notification.",
+                                    "ArgumentSubClaims": [
+                                        {
+                                            "ArgumentSubClaim1": {
+                                                "description": "The notification describes the categories and approximate number of data subjects concerned.",
+                                                "Evidences": [
+                                                    {
+                                                        "Evidence1": {
+                                                            "description": "Notification document showing the description of data subject categories.",
+                                                            "type": "document",
+                                                            "source": "internal breach notification records"
+                                                        }
+                                                    },
+                                                    {
+                                                        "Evidence2": {
+                                                            "description": "Summary of the approximate number of data subjects affected.",
+                                                            "type": "report",
+                                                            "source": "data breach impact assessment"
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        {
+                                            "ArgumentSubClaim2": {
+                                                "description": "The notification describes the categories and approximate number of personal data records concerned.",
+                                                "Evidences": [
+                                                    {
+                                                        "Evidence1": {
+                                                            "description": "Notification document showing the description of personal data record categories.",
+                                                            "type": "document",
+                                                            "source": "internal breach notification records"
+                                                        }
+                                                    },
+                                                    {
+                                                        "Evidence2": {
+                                                            "description": "Summary of the approximate number of personal data records affected.",
+                                                            "type": "report",
+                                                            "source": "data breach impact assessment"
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    "SubClaim2": {
+                        "description": "The notification includes the name and contact details of the data protection officer, the consequences of the breach, and the measures taken or proposed to mitigate its effects.",
+                        "ArgumentClaims": [
+                            {
+                                "ArgumentClaim": {
+                                    "description": "The argument supporting the inclusion of DPO contact details, breach consequences, and mitigation measures in the notification.",
+                                    "ArgumentSubClaims": [
+                                        {
+                                            "ArgumentSubClaim1": {
+                                                "description": "The notification includes the name and contact details of the data protection officer or contact point for more information.",
+                                                "Evidences": [
+                                                    {
+                                                        "Evidence1": {
+                                                            "description": "Notification document showing the DPO's name and contact details.",
+                                                            "type": "document",
+                                                            "source": "internal breach notification records"
+                                                        }
+                                                    },
+                                                    {
+                                                        "Evidence2": {
+                                                            "description": "Contact information page on the organization's website.",
+                                                            "type": "webpage",
+                                                            "source": "organization's official website"
+                                                        }
+                                                    },
+                                                    {
+                                                        "Evidence3": {
+                                                            "description": "Internal policy document outlining the requirement to include DPO contact details.",
+                                                            "type": "policy",
+                                                            "source": "internal data protection policy"
+                                                        }
+                                                    },
+                                                    {
+                                                        "Evidence4": {
+                                                            "description": "Email communication with affected data subjects including DPO contact details.",
+                                                            "type": "email",
+                                                            "source": "internal email records"
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        {
+                                            "ArgumentSubClaim2": {
+                                                "description": "The notification describes the likely consequences of the personal data breach and the measures taken or proposed to mitigate its possible adverse effects.",
+                                                "Evidences": [
+                                                    {
+                                                        "Evidence1": {
+                                                            "description": "Notification document describing the consequences of the breach.",
+                                                            "type": "document",
+                                                            "source": "internal breach notification records"
+                                                        }
+                                                    },
+                                                    {
+                                                        "Evidence2": {
+                                                            "description": "Mitigation plan outlining steps taken to address the breach.",
+                                                            "type": "plan",
+                                                            "source": "data breach response plan"
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+}

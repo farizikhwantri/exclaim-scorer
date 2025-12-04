@@ -1,5 +1,10 @@
 import json
 import time
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 from typing import Dict, Any, List, Tuple
 
@@ -84,7 +89,9 @@ def inject_scores(original: Dict[str, Any], node_scores: Dict[Tuple[str, ...], D
         # else: skip non-dict nodes
     return original
 
-def score_texts_backend(model_type: str, model_name: str, items: List[Dict[str, Any]]) -> Dict[Tuple[str, ...], Dict[str, float]]:
+def score_texts_backend(model_type: str, 
+                        model_name: str, 
+                        items: List[Dict[str, Any]]) -> Dict[Tuple[str, ...], Dict[str, float]]:
     """
     Compute explanation scores for each linearized node text.
     - encoder: use Captum-based proxy scoring on an encoder model (BERT-like)
@@ -137,10 +144,13 @@ def score_texts_backend(model_type: str, model_name: str, items: List[Dict[str, 
             text = it["text"]
             path = tuple(it["path"])
             inp = tokenizer(text, return_tensors="pt")
+            # print text into logging
+            logger.info(f"Scoring text at path {path}: {text}...")
             inp = {k: v.to(model.device) for k, v in inp.items()}
             with torch.no_grad():
                 out = model.generate(**inp, max_new_tokens=64, do_sample=False, pad_token_id=tokenizer.eos_token_id)
-            full = tokenizer.decode(out[0], skip_special_tokens=True)
+            full = tokenizer.decode(out[0], skip_special_tokens=True, 
+                                    clean_up_tokenization_spaces=True)
             # crude importance: longer generations imply more reliance on input
             length = max(1, len(full.split()))
             comp = min(1.0, length / 64.0)

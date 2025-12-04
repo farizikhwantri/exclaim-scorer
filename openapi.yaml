@@ -6,13 +6,23 @@ paths:
   /score:
     post:
       summary: Score an assurance case explanation JSON
-      description: Linearizes the argument structure, computes explanation scores (Captum for encoder or InSeq for decoder), and returns the JSON with scores attached.
+      description: Linearizes the argument structure, computes explanation scores, and returns the JSON with scores injected.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/ScoreRequest"
+            examples:
+              minimal:
+                value:
+                  model_type: decoder
+                  model_name: gpt2
+                  task: null
+                  document:
+                    Claim:
+                      description: "Test claim"
+                      SubClaims: []
       responses:
         "200":
           description: Scored JSON
@@ -24,23 +34,25 @@ components:
   schemas:
     ScoreRequest:
       type: object
-      required: [model_type, model_name, json]
+      required: [model_type, model_name, document]
       properties:
         model_type:
           type: string
           enum: [encoder, decoder]
-          description: encoder (BERT-like via Captum) or decoder (GPT-like via InSeq)
+          description: encoder (BERT-like) or decoder (GPT-like)
         model_name:
           type: string
-          description: HF model id (e.g., bert-base-uncased or meta-llama/Llama-3.2-1B-Instruct)
+          description: HF model id (e.g., bert-base-uncased or gpt2)
         task:
           type: string
+          nullable: true
           description: Optional task descriptor for prompt building
-        json:
+        document:
           type: object
           description: Assurance case JSON without scores
     ScoreResponse:
       type: object
+      required: [model_type, model_name, scored_json]
       properties:
         model_type:
           type: string

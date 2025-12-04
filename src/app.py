@@ -9,7 +9,9 @@ from pydantic import BaseModel
 from pydantic import BaseModel, PrivateAttr
 from pydantic import ConfigDict
 
-from fastapi import FastAPI, HTTPException
+import yaml
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.openapi.utils import get_openapi
 
 # Optional heavy deps are imported lazily in worker:
 # - captum/inseq/transformers/torch
@@ -21,6 +23,27 @@ app = FastAPI(title="LLM Explanation Scorer API", version="0.1.0")
 
 # Simple in-memory job queue
 JOB_QUEUE = queue.Queue(maxsize=1000)
+
+
+# Load and expose openapi.yaml (optional but useful to keep docs in sync)
+OPENAPI_YAML_PATH = os.getenv("OPENAPI_YAML_PATH", "/app/openapi.yaml")
+_openapi_yaml = None
+if os.path.exists(OPENAPI_YAML_PATH):
+    with open(OPENAPI_YAML_PATH, "r") as f:
+        _openapi_yaml = yaml.safe_load(f)
+    # Set FastAPI’s schema so /docs uses the curated YAML
+    app.openapi_schema = _openapi_yaml
+else:
+    # Fallback: generate schema from routes
+    app.openapi_schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+
+@app.get("/openapi.yaml")
+def get_openapi_yaml():
+    if _openapi_yaml is None:
+        # Generate from current routes and return YAML
+        schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+        return Response(yaml.safe_dump(schema), media_type="text/yaml")
+    return Response(yaml.safe_dump(_openapi_yaml), media_type="text/yaml")
 
 
 class ScoreRequest(BaseModel):
