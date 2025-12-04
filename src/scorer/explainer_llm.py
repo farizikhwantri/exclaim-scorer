@@ -1,8 +1,8 @@
-import copy
+# import copy
 import numpy as np
-from transformers import AutoTokenizer, AutoModelForCausalLM
+# from transformers import AutoTokenizer, AutoModelForCausalLM
 
-import torch
+# import torch
 
 from inseq import load_model
 from inseq.models import AttributionModel
@@ -27,7 +27,7 @@ class LLMAttribution(BaseExplainer):
         # Load the inseq attribution model using the provided attribution method.
         self.attribution_method = attribution_method
         if isinstance(model, AttributionModel):
-            print("Using provided model.")
+            # print("Using provided model.")
             self.inseq_model = model  # Assuming the model is already an inseq-compatible model
         else:
             # Load the model using inseq's load_model function.
@@ -65,7 +65,8 @@ class LLMAttribution(BaseExplainer):
           List[Explanation]: A list of Explanation objects for each attribution step.
         """
         # compute input token length
-        inputs = self.tokenizer(text, return_tensors="pt")
+        inputs = self.tokenizer(text, return_tensors="pt", 
+                                padding="longest", truncation=True)
         length = inputs["input_ids"].shape[1]
         default_max_new_tokens = length + 20
 

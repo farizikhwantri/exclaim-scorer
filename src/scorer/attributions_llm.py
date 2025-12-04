@@ -20,16 +20,16 @@ from sklearn.metrics import classification_report
 
 from inseq import load_model
 
-from explainer_llm import LLMAttribution
-from faithfulness_lm import AOPC_Comprehensiveness_LLM_Evaluation
-from faithfulness_lm import AOPC_Sufficiency_LLM_Evaluation
+from src.scorer.explainer_llm import LLMAttribution
+from src.scorer.faithfulness_lm import AOPC_Comprehensiveness_LLM_Evaluation
+from src.scorer.faithfulness_lm import AOPC_Sufficiency_LLM_Evaluation
 
-from utils_prompt import build_prompt
-from utils_prompt import build_prompt_curried
-from utils_prompt import zero_shot_prompt
-from utils_prompt import multi_hop_prompt
-from utils_prompt import multi_hop_prompt_curried
-from utils_prompt import task_prefix
+from src.scorer.utils_prompt import build_prompt
+from src.scorer.utils_prompt import build_prompt_curried
+from src.scorer.utils_prompt import zero_shot_prompt
+from src.scorer.utils_prompt import multi_hop_prompt
+from src.scorer.utils_prompt import multi_hop_prompt_curried
+from src.scorer.utils_prompt import task_prefix
 
 # check device
 if torch.cuda.is_available():
