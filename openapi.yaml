@@ -1,0 +1,51 @@
+openapi: 3.0.3
+info:
+  title: LLM Explanation Scorer API
+  version: 0.1.0
+paths:
+  /score:
+    post:
+      summary: Score an assurance case explanation JSON
+      description: Linearizes the argument structure, computes explanation scores (Captum for encoder or InSeq for decoder), and returns the JSON with scores attached.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScoreRequest"
+      responses:
+        "200":
+          description: Scored JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScoreResponse"
+components:
+  schemas:
+    ScoreRequest:
+      type: object
+      required: [model_type, model_name, json]
+      properties:
+        model_type:
+          type: string
+          enum: [encoder, decoder]
+          description: encoder (BERT-like via Captum) or decoder (GPT-like via InSeq)
+        model_name:
+          type: string
+          description: HF model id (e.g., bert-base-uncased or meta-llama/Llama-3.2-1B-Instruct)
+        task:
+          type: string
+          description: Optional task descriptor for prompt building
+        json:
+          type: object
+          description: Assurance case JSON without scores
+    ScoreResponse:
+      type: object
+      properties:
+        model_type:
+          type: string
+        model_name:
+          type: string
+        scored_json:
+          type: object
+          description: Input JSON with scores injected
