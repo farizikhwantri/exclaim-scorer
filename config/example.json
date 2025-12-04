@@ -1,8 +1,8 @@
 {
     "model_type": "decoder",
     "model_name": "gpt2",
-    "task": "score_claims",
-    "document": 
+    "task": null,
+    "assurance_case_json": 
     {
         "MainClaim": {
             "description": "The system complies with the GDPR requirement R28: MD8 for notifying personal data breaches.",

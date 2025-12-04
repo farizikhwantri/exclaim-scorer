@@ -1,162 +1,185 @@
-import json
-import time
 import logging
+from typing import Dict, Any, List, Tuple
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-from typing import Dict, Any, List, Tuple
+CONTAINER_KEYS = {
+    "SubClaims", "Arguments", "ArgumentClaims",
+    "ArgumentSubClaims", "Evidences"
+}
 
 def linearize_assurance_json(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Linearize nested assurance case structure:
-    returns a list of nodes with text to score and path.
-    Expected input is similar to feedback_loop.json schema (Claim/SubClaims/Arguments/Evidences).
+    Dummy traversal:
+    - Start at Claim/MainClaim
+    - Recurse through containers (SubClaims/Arguments/.../Evidences)
+    - Collect intermediate node descriptions into `premise`
+    - Emit items only for Evidence (leaf) nodes with their description as `text`
     """
     out: List[Dict[str, Any]] = []
 
-    def push(node_type: str, path: List[str], description: str, meta: Dict[str, Any] = None):
-        if not description:
-            return
-        out.append({
-            "node_type": node_type,
-            "path": path.copy(),
-            "text": str(description),
-            "meta": meta or {}
-        })
+    def is_container_key(k: str) -> bool:
+        return k in CONTAINER_KEYS
 
-    def walk(obj: Dict[str, Any], path: List[str]):
-        # Claim
-        if "Claim" in obj and isinstance(obj["Claim"], dict):
-            claim = obj["Claim"]
-            push("Claim", path + ["Claim"], claim.get("description", ""), {"block_type": claim.get("block_type")})
-            # SubClaims
-            subs = claim.get("SubClaims", [])
-            for s in subs:
-                for key, sub in s.items():
-                    push("SubClaim", path + ["Claim", key], sub.get("description",""), {"block_type": sub.get("block_type")})
-                    # Arguments
-                    args = sub.get("Arguments", [])
-                    for a in args:
-                        for akey, arg in a.items():
-                            push("Argument", path + ["Claim", key, akey], arg.get("description",""), {"block_type": arg.get("block_type")})
-                            # Evidences
-                            evids = arg.get("Evidences", [])
-                            for e in evids:
-                                for ekey, ev in e.items():
-                                    push("Evidence", path + ["Claim", key, akey, ekey], ev.get("description",""), {"type": ev.get("type")})
-        else:
-            # If already a single-level node:
-            for k, v in obj.items():
-                if isinstance(v, dict) and "description" in v:
-                    push(k, path + [k], v["description"], v)
+    def node_desc(node: Dict[str, Any]) -> str | None:
+        if isinstance(node, dict):
+            return node.get("description")
+        return None
 
-    walk(doc, [])
+    def walk(node: Any, path: List[str], premise: List[str]):
+        # Evidence leaf: dict with description and no child containers
+        if isinstance(node, dict):
+            desc = node_desc(node)
+            has_children = any(is_container_key(k) for k in node.keys())
+            if desc is not None and not has_children:
+                out.append({
+                    "path": path.copy(),
+                    "text": str(desc),
+                    "premise": premise.copy(),
+                    "node_type": path[-1] if path else "Node",
+                })
+                return
+
+            # push current description to premise if present (and not an Evidence leaf yet)
+            if desc:
+                premise.append(str(desc))
+
+            # recurse into containers and nested keyed nodes
+            for k, v in node.items():
+                if is_container_key(k):
+                    # containers can be list or dict
+                    if isinstance(v, list):
+                        for item in v:
+                            if isinstance(item, dict):
+                                for ck, cv in item.items():
+                                    walk(cv, path + [k, ck], premise)
+                    else:
+                        walk(v, path + [k], premise)
+                elif isinstance(v, dict):
+                    walk(v, path + [k], premise)
+                elif isinstance(v, list):
+                    for item in v:
+                        walk(item, path + [k], premise)
+
+            # pop current desc when unwinding
+            if desc:
+                premise.pop()
+
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, path, premise)
+
+    # Choose root
+    if "Claim" in doc and isinstance(doc["Claim"], dict):
+        walk(doc["Claim"], ["Claim"], [])
+    elif "MainClaim" in doc and isinstance(doc["MainClaim"], dict):
+        walk(doc["MainClaim"], ["MainClaim"], [])
+    else:
+        # fallback: traverse whole doc
+        walk(doc, [], [])
+
     return out
 
 def inject_scores(original: Dict[str, Any], node_scores: Dict[Tuple[str, ...], Dict[str, float]]) -> Dict[str, Any]:
     """
-    Inject scores back into the original JSON at each node path.
-    node_scores keys are tuple(path segments), values are dicts of scores, eg:
-    {"comprehensiveness": 0.87, "sufficiency": 0.81}
+    Inject scores at leaf nodes referenced by `path` tuples.
+    Adds edge_scores with comprehensiveness/sufficiency and includes `premise` if provided.
     """
-    def get_at_path(root, path: List[str]):
+    def is_container_key(k: str) -> bool:
+        return k in CONTAINER_KEYS
+
+    def get_at_path(root: Any, path: List[str]) -> Any:
         cur = root
-        for p in path:
+        i = 0
+        while i < len(path):
+            p = path[i]
             if isinstance(cur, dict) and p in cur:
                 cur = cur[p]
+                i += 1
+            elif isinstance(cur, list):
+                # list items are dicts with single keyed children; pick matching key
+                found = None
+                for item in cur:
+                    if isinstance(item, dict) and i < len(path):
+                        key = path[i + 1] if (i < len(path) - 1 and path[i] in CONTAINER_KEYS) else path[i]
+                        if key in item:
+                            found = item[key]
+                            # advance i by 2 if we matched container + child
+                            i += 2 if (i < len(path) - 1 and path[i] in CONTAINER_KEYS) else 1
+                            break
+                cur = found if found is not None else cur
             else:
-                # handle list wrappers like SubClaims/Arguments/Evidences
-                if isinstance(cur, dict):
-                    for v in cur.values():
-                        cur = v
-                        break
+                break
         return cur
 
-    # For typical schema: add edge_scores under each Evidence, and scores for Argument/SubClaim/Claim
+    def is_leaf_node(node: Any) -> bool:
+        return isinstance(node, dict) and not any(is_container_key(k) for k in node.keys())
+
     for path_tuple, scores in node_scores.items():
         path = list(path_tuple)
         node = get_at_path(original, path)
-        if isinstance(node, dict):
-            # Attach scores in a standard key
+        if is_leaf_node(node):
+            parent = path[-2] if len(path) >= 2 else ""
             node.setdefault("edge_scores", [])
-            node["edge_scores"].append({
-                "parent": path[-2] if len(path) >= 2 else "",
+            payload = {
+                "parent": parent,
                 "comprehensiveness_score": round(scores.get("comprehensiveness", 0.0), 4),
-                "sufficiency_score": round(scores.get("sufficiency", 0.0), 4)
-            })
-        # else: skip non-dict nodes
+                "sufficiency_score": round(scores.get("sufficiency", 0.0), 4),
+            }
+            # include premise if backend provided it
+            if "premise" in scores and isinstance(scores["premise"], list):
+                payload["premise"] = scores["premise"]
+            node["edge_scores"].append(payload)
     return original
 
-def score_texts_backend(model_type: str, 
-                        model_name: str, 
-                        items: List[Dict[str, Any]]) -> Dict[Tuple[str, ...], Dict[str, float]]:
+def score_texts_backend(model_type: str, model_name: str, items: List[Dict[str, Any]]) -> Dict[Tuple[str, ...], Dict[str, float]]:
     """
-    Compute explanation scores for each linearized node text.
-    - encoder: use Captum-based proxy scoring on an encoder model (BERT-like)
-    - decoder: use InSeq-based AOPC scorers on a decoder model (Llama/Qwen-like)
-    Returns dict mapping node path -> scores.
+    Dummy scorer:
+    - chain_prob: product of per-segment pseudo-probabilities based on length
+    - comprehensiveness: drop when masking 20% tokens (length proxy)
+    - sufficiency: utility with only 20% tokens kept (length proxy)
+    - passes through the collected `premise` chain
+    Replace with real model-based scoring later.
     """
-    # Lazy import heavy deps
-    import torch
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification, AutoModelForCausalLM
+    scores: Dict[Tuple[str, ...], Dict[str, float]] = {}
 
-    node_scores: Dict[Tuple[str, ...], Dict[str, float]] = {}
+    def segments(text: str) -> List[str]:
+        segs = [s.strip() for s in text.replace("\n", " ").split(".") if s.strip()]
+        return segs or [text]
 
-    if model_type == "encoder":
-        # Simplified proxy: use token gradients norm as explanation strength, normalize to [0,1]
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForSequenceClassification.from_pretrained(model_name).to("cuda" if torch.cuda.is_available() else "cpu")
-        model.eval()
-        for it in items:
-            text = it["text"]
-            path = tuple(it["path"])
-            enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-            enc = {k: v.to(model.device) for k, v in enc.items()}
-            enc["labels"] = torch.tensor([0], device=model.device)  # dummy label
-            model.zero_grad()
-            logits = model(**enc).logits
-            target = logits.argmax(dim=-1)
-            # gradient wrt input embeddings
-            logits[:, target.item()].sum().backward()
-            # Use grad norm over input_ids positions as a crude importance
-            grads = None
-            for n, p in model.named_parameters():
-                if "embeddings.word_embeddings.weight" in n and p.grad is not None:
-                    grads = p.grad
-                    break
-            if grads is None:
-                imp = 0.0
-            else:
-                # score: normalized gradient magnitude proxy
-                imp = float(torch.clamp(grads.norm().detach(), max=10.0).item()) / 10.0
-            node_scores[path] = {
-                "comprehensiveness": min(1.0, imp),
-                "sufficiency": max(0.0, 1.0 - imp)
-            }
-    elif model_type == "decoder":
-        # Use InSeq-like AOPC proxies (fast placeholder): logit delta after masking top tokens
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", trust_remote_code=True)
-        model.eval()
-        for it in items:
-            text = it["text"]
-            path = tuple(it["path"])
-            inp = tokenizer(text, return_tensors="pt")
-            # print text into logging
-            logger.info(f"Scoring text at path {path}: {text}...")
-            inp = {k: v.to(model.device) for k, v in inp.items()}
-            with torch.no_grad():
-                out = model.generate(**inp, max_new_tokens=64, do_sample=False, pad_token_id=tokenizer.eos_token_id)
-            full = tokenizer.decode(out[0], skip_special_tokens=True, 
-                                    clean_up_tokenization_spaces=True)
-            # crude importance: longer generations imply more reliance on input
-            length = max(1, len(full.split()))
-            comp = min(1.0, length / 64.0)
-            suff = max(0.0, 1.0 - comp)
-            node_scores[path] = {"comprehensiveness": round(comp, 4), "sufficiency": round(suff, 4)}
-    else:
-        raise ValueError("model_type must be 'encoder' or 'decoder'")
+    logger.info(f"Scoring {len(items)} items with dummy backend for model {model_type}/{model_name}")
+    for it in items:
+        logger.info(f"Scoring item at path {it['path']}")
+        text = it["text"]
+        path = tuple(it["path"])
+        prem = it.get("premise", [])
 
-    return node_scores
+        # pseudo chain prob from segment lengths
+        chain = 1.0
+        for s in segments(text):
+            l = max(1, len(s.split()))
+            p = min(1.0, l / 50.0)  # cap utility per segment
+            chain *= max(1e-6, p)
+        chain = max(0.0, min(1.0, chain))
+
+        # faithfulness proxies
+        L = max(1, len(text.split()))
+        k = max(1, int(0.2 * L))
+        base = min(1.0, L / 100.0)
+        masked = min(1.0, max(0.0, (L - k) / 100.0))
+        kept = min(1.0, k / 100.0)
+        comprehensiveness = max(0.0, base - masked)
+        sufficiency = kept
+
+        scores[path] = {
+            "chain_prob": round(chain, 4),
+            "comprehensiveness": round(comprehensiveness, 4),
+            "sufficiency": round(sufficiency, 4),
+            "premise": prem,
+        }
+
+        logger.info(f"Scored leaf at path {path}: chain={chain:.4f}, comp={comprehensiveness:.4f}, suff={sufficiency:.4f}")
+
+    return scores

@@ -43,7 +43,7 @@ curl -X POST http://localhost:8000/score \
     "model_type": "decoder",
     "model_name": "gpt2",
     "task": null,
-    "document": {
+    "assurance_case_json": {
       "Claim": { "description": "Test claim", "SubClaims": [] }
     }
   }'

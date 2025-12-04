@@ -2,15 +2,21 @@ import os
 import queue
 import threading
 
+import logging
+
 from typing import Dict, Any
 from typing import Literal
 
 from pydantic import BaseModel
 from pydantic import BaseModel, PrivateAttr
 from pydantic import ConfigDict
+from pydantic import Field
+from pydantic import AliasChoices
 
 import yaml
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI
+from fastapi import HTTPException
+from fastapi import Response
 from fastapi.openapi.utils import get_openapi
 
 # Optional heavy deps are imported lazily in worker:
@@ -18,6 +24,10 @@ from fastapi.openapi.utils import get_openapi
 from src.scorer.backend import linearize_assurance_json
 from src.scorer.backend import inject_scores
 from src.scorer.backend import score_texts_backend
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 app = FastAPI(title="LLM Explanation Scorer API", version="0.1.0")
 
@@ -50,13 +60,11 @@ class ScoreRequest(BaseModel):
     model_type: Literal["encoder", "decoder"]
     model_name: str
     task: str | None = None
-    document: Dict[str, Any]  # renamed from `json` to avoid shadowing BaseModel.json()
+    assurance_case_json: Dict[str, Any]  # canonical input field
 
-    # Internal fields not part of the schema/validation
     _result: "ScoreResponse | None" = PrivateAttr(default=None)
     _error: "str | None" = PrivateAttr(default=None)
 
-    # Disable protected namespace warnings (e.g., model_type/model_name)
     model_config = ConfigDict(protected_namespaces=())
 
 class ScoreResponse(BaseModel):
@@ -68,9 +76,10 @@ def worker_loop():
     while True:
         try:
             req: ScoreRequest = JOB_QUEUE.get()
-            items = linearize_assurance_json(req.document)  # updated field name
+            items = linearize_assurance_json(req.assurance_case_json)  # updated field name
+            logger.info(f"Linearized to {len(items)} items")
             scores = score_texts_backend(req.model_type, req.model_name, items)
-            scored = inject_scores(req.document, scores)    # updated field name
+            scored = inject_scores(req.assurance_case_json, scores)    # updated field name
             req._result = ScoreResponse(model_type=req.model_type, model_name=req.model_name, scored_json=scored)
         except Exception as e:
             req._error = str(e)

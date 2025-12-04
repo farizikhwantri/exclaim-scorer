@@ -1,0 +1,84 @@
+{
+    "Claim": {
+        "description": "The system enforces least privilege across all components.",
+        "block_type": "Decomposition",
+        "final_status": "khaki",
+        "SubClaims": [
+            {
+                "SubClaim1": {
+                    "description": "Access policies are in place to restrict user permissions.",
+                    "block_type": "Concretion",
+                    "final_status": "green",
+                    "Arguments": [
+                        {
+                            "Argument1": {
+                                "description": "Policies and system design enforce role-based restrictions.",
+                                "block_type": "Evidence-incorporation",
+                                "final_status": "green",
+                                "Evidences": [
+                                    {
+                                        "Evidence1": {
+                                            "description": "System design document specifying user roles.",
+                                            "type": "document",
+                                            "edge_scores": [
+                                                {
+                                                    "parent": "Argument1",
+                                                    "comprehensiveness_score": 0.86,
+                                                    "sufficiency_score": 0.81
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    {
+                                        "Evidence2": {
+                                            "description": "Policy file defining access control rules.",
+                                            "type": "policy",
+                                            "edge_scores": [
+                                                {
+                                                    "parent": "Argument1",
+                                                    "comprehensiveness_score": 0.90,
+                                                    "sufficiency_score": 0.84
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "SubClaim2": {
+                    "description": "Audit logs demonstrate least privilege in operation.",
+                    "block_type": "Concretion",
+                    "final_status": "red",
+                    "Arguments": [
+                        {
+                            "Argument2": {
+                                "description": "Audit evidence confirms enforcement of least privilege.",
+                                "block_type": "Evidence-incorporation",
+                                "final_status": "red",
+                                "Evidences": [
+                                    {
+                                        "Evidence3": {
+                                            "description": "Audit log of user access requests.",
+                                            "type": "log",
+                                            "edge_scores": [
+                                                {
+                                                    "parent": "Argument2",
+                                                    "comprehensiveness_score": 0.62,
+                                                    "sufficiency_score": 0.55
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+}
