@@ -1,0 +1,92 @@
+import os
+from celery import Celery
+import logging
+
+from typing import Dict, Any
+from typing import Literal
+
+from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
+from pydantic import ConfigDict
+from pydantic import Field
+from pydantic import AliasChoices
+
+import yaml
+from fastapi import FastAPI
+from fastapi import HTTPException
+from fastapi import Response
+from fastapi.openapi.utils import get_openapi
+
+# Optional heavy deps are imported lazily in worker:
+# - captum/inseq/transformers/torch
+from src.scorer.backend import linearize_assurance_json
+from src.scorer.backend import inject_scores
+from src.scorer.backend import score_texts_backend
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+app = FastAPI(title="LLM Explanation Scorer API", version="0.1.0")
+
+celery_app = Celery(
+    "scorer",
+    broker=os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0"),
+    backend=os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/0"),
+)
+
+
+# Load and expose openapi.yaml (optional but useful to keep docs in sync)
+OPENAPI_YAML_PATH = os.getenv("OPENAPI_YAML_PATH", "/app/openapi.yaml")
+_openapi_yaml = None
+if os.path.exists(OPENAPI_YAML_PATH):
+    with open(OPENAPI_YAML_PATH, "r") as f:
+        _openapi_yaml = yaml.safe_load(f)
+    # Set FastAPI’s schema so /docs uses the curated YAML
+    app.openapi_schema = _openapi_yaml
+else:
+    # Fallback: generate schema from routes
+    app.openapi_schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+
+@app.get("/openapi.yaml")
+def get_openapi_yaml():
+    if _openapi_yaml is None:
+        # Generate from current routes and return YAML
+        schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+        return Response(yaml.safe_dump(schema), media_type="text/yaml")
+    return Response(yaml.safe_dump(_openapi_yaml), media_type="text/yaml")
+
+
+class ScoreRequest(BaseModel):
+    model_type: Literal["encoder", "decoder"]
+    model_name: str
+    task: str | None = None
+    assurance_case_json: Dict[str, Any]  # canonical input field
+
+    _result: "ScoreResponse | None" = PrivateAttr(default=None)
+    _error: "str | None" = PrivateAttr(default=None)
+
+    model_config = ConfigDict(protected_namespaces=())
+
+class ScoreResponse(BaseModel):
+    model_type: str
+    model_name: str
+    scored_json: Dict[str, Any]
+
+@celery_app.task(name="score_document")
+def score_document(model_type: str, model_name: str, assurance_case_json: dict):
+    from src.scorer.backend import linearize_assurance_json, score_texts_backend, inject_scores
+    items = linearize_assurance_json(assurance_case_json)
+    scores = score_texts_backend(model_type, model_name, items)
+    return inject_scores(assurance_case_json, scores)
+
+@app.post("/score", response_model=ScoreResponse)
+def score_endpoint(payload: ScoreRequest):
+    job = score_document.delay(payload.model_type, 
+                               payload.model_name, 
+                               payload.assurance_case_json)
+    result = job.get(timeout=int(os.getenv("SCORER_TIMEOUT", "120")))  
+    # or return job id and add a /status endpoint
+    return ScoreResponse(model_type=payload.model_type, 
+                         model_name=payload.model_name, 
+                         scored_json=result)

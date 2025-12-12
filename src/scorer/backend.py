@@ -82,7 +82,8 @@ def linearize_assurance_json(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     return out
 
-def inject_scores(original: Dict[str, Any], node_scores: Dict[Tuple[str, ...], Dict[str, float]]) -> Dict[str, Any]:
+def inject_scores(original: Dict[str, Any], 
+                  node_scores: Dict[Tuple[str, ...], Dict[str, float]]) -> Dict[str, Any]:
     """
     Inject scores at leaf nodes referenced by `path` tuples.
     Adds edge_scores with comprehensiveness/sufficiency and includes `premise` if provided.
@@ -134,7 +135,8 @@ def inject_scores(original: Dict[str, Any], node_scores: Dict[Tuple[str, ...], D
             node["edge_scores"].append(payload)
     return original
 
-def score_texts_backend_dummy(model_type: str, model_name: str, items: List[Dict[str, Any]]) -> Dict[Tuple[str, ...], Dict[str, float]]:
+def score_texts_backend_dummy(model_type: str, model_name: str, 
+                              items: List[Dict[str, Any]]) -> Dict[Tuple[str, ...], Dict[str, float]]:
     """
     Dummy scorer:
     - chain_prob: product of per-segment pseudo-probabilities based on length
@@ -184,7 +186,8 @@ def score_texts_backend_dummy(model_type: str, model_name: str, items: List[Dict
 
     return scores
 
-def score_texts_backend(model_type: str, model_name: str, items: List[Dict[str, Any]]) -> Dict[Tuple[str, ...], Dict[str, float]]:
+def score_texts_backend(model_type: str, model_name: str, 
+                        items: List[Dict[str, Any]]) -> Dict[Tuple[str, ...], Dict[str, float]]:
     """
     Integrates attribution-based scoring:
       - encoder: src/scorer/attributions.py using Ferret Benchmark (IG/Gradient/LIME/SHAP)
@@ -349,8 +352,12 @@ def score_texts_backend(model_type: str, model_name: str, items: List[Dict[str, 
 
                 avg_comp, avg_suff = 0.0, 0.0
                 for expl in explanations:
-                    compr = aopc_comp_eval.compute_evaluation(expl, expl.target, token_position=None, removal_args={"remove_tokens": False}, remove_first_last=False, only_pos=True)
-                    suff = aopc_suff_eval.compute_evaluation(expl, expl.target, token_position=None, removal_args={"remove_tokens": False}, remove_first_last=False, only_pos=True)
+                    compr = aopc_comp_eval.compute_evaluation(expl, expl.target, token_position=None, 
+                                                              removal_args={"remove_tokens": False}, 
+                                                              remove_first_last=False, only_pos=True)
+                    suff = aopc_suff_eval.compute_evaluation(expl, expl.target, token_position=None, 
+                                                             removal_args={"remove_tokens": False}, 
+                                                             remove_first_last=False, only_pos=True)
                     avg_comp += compr.score
                     avg_suff += suff.score
                 if explanations:
@@ -377,29 +384,8 @@ def score_texts_backend(model_type: str, model_name: str, items: List[Dict[str, 
     except Exception as e:
         logger.warning(f"Attribution scoring failed ({e}); falling back to dummy length-based scores.")
         # Fallback: use your previous dummy logic
-        print(f"Falling back to dummy scoring backend., {e}")
-        def segments(text: str) -> List[str]:
-            segs = [s.strip() for s in text.replace("\n", " ").split(".") if s.strip()]
-            return segs or [text]
-        for it in items:
-            text = it["text"]
-            path = tuple(it["path"])
-            prem = it.get("premise", [])
-            chain = 1.0
-            for s in segments(text):
-                l = max(1, len(s.split()))
-                p = min(1.0, l / 50.0)
-                chain *= max(1e-6, p)
-            L = max(1, len(text.split()))
-            k = max(1, int(0.2 * L))
-            base = min(1.0, L / 100.0)
-            masked = min(1.0, max(0.0, (L - k) / 100.0))
-            kept = min(1.0, k / 100.0)
-            scores[path] = {
-                "chain_prob": round(max(0.0, min(1.0, chain)), 4),
-                "comprehensiveness": round(max(0.0, base - masked), 4),
-                "sufficiency": round(kept, 4),
-                "premise": prem,
-            }
+        # print(f"Falling back to dummy scoring backend., {e}")
+
+        scores = score_texts_backend_dummy(model_type, model_name, items)
 
     return scores
