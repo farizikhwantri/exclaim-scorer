@@ -10,6 +10,8 @@ pandas==2.2.2
 scikit-learn==1.5.2
 numpy==2.1.1
 tqdm==4.66.5
-celery==5.4.7
-redis==4.9.0
+celery>=5.5.0
+redis>=4.5.2
+peft==0.13.2
+ferret-xai==0.4.0
 # vllm==0.6.2.post1  # optional, GPU container required

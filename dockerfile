@@ -8,6 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # System deps for building torch/transformers and optional vLLM
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     build-essential git curl ca-certificates \
+        libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -20,7 +21,7 @@ COPY requirements.txt /app/requirements.txt
 # Install Python deps
 # Include FastAPI/uvicorn, transformers, torch, captum, inseq, vllm (optional), pandas, scikit-learn
 RUN pip install --upgrade pip && \
-    pip install -r /app/requirements.txt
+    pip install -r /app/requirements.txt 
 
 # Copy source
 COPY src /app/src

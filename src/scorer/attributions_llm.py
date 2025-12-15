@@ -1,5 +1,4 @@
 import os
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import csv
 import argparse
 import logging
@@ -31,11 +30,13 @@ from src.scorer.utils_prompt import multi_hop_prompt
 from src.scorer.utils_prompt import multi_hop_prompt_curried
 from src.scorer.utils_prompt import task_prefix
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 # check device
 if torch.cuda.is_available():
     DEVICE = 'cuda'
-# elif torch.backends.mps.is_available():
-#     DEVICE = 'mps'
+elif torch.backends.mps.is_available():
+    DEVICE = 'mps'
 else:
     DEVICE = 'cpu'
 print(f"Using device: {DEVICE}")

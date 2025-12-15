@@ -209,7 +209,9 @@ def score_texts_backend(model_type: str, model_name: str,
             import torch
 
             tokenizer = AutoTokenizer.from_pretrained(model_name)
-            model = AutoModelForSequenceClassification.from_pretrained(model_name)
+            model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=2,
+                                                                       trust_remote_code=True,
+                                                                    )
             model.eval()
 
             class LeafDataset(Dataset):

@@ -12,11 +12,6 @@ from torch.utils.data import Dataset
 from transformers import AutoConfig, AutoModelForSequenceClassification, AutoModel, AutoModelForSeq2SeqLM, AutoModelForCausalLM
 from transformers import AutoTokenizer
 
-
-# from torch_geometric.data import Data as PyGData
-# from torch_geometric.data import Dataset as PyGDataset
-from torch_geometric.utils import k_hop_subgraph
-
 # Copied from https://github.com/huggingface/transformers/blob/main/examples/pytorch/text-classification/run_glue.py.
 GLUE_TASK_TO_KEYS = {
     "cola": ("sentence", None),
