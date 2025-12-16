@@ -16,8 +16,8 @@ paths:
             examples:
               minimal:
                 value:
-                  model_type: decoder
-                  model_name: gpt2
+                  model_type: decoder|encoder
+                  model_name: gpt2|bert-large-uncased
                   task: null
                   assurance_case_json:
                     Claim:
