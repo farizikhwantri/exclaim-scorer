@@ -1,0 +1,21 @@
+{
+	"model_type": "decoder",
+	"model_name": "gpt2",
+	"task": null,
+	"assurance_case_json": {
+        "Claims": [
+            {
+                "Claim": {
+                    "description": "Test claim",
+                    "Evidences": [
+                        {
+                            "Evidence1": {
+                            "description": "Access control matrix showing user permissions."
+                        }
+                    }
+                ]
+                }
+            }
+        ]
+	}
+}

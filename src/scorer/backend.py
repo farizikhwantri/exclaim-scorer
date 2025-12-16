@@ -1,9 +1,13 @@
 import logging
 from typing import Dict, Any, List, Tuple
 
+from torch.utils.data import Dataset
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+from src.scorer.attributions import ferret_interpret_model
 
 CONTAINER_KEYS = {
     "SubClaims", "Arguments", "ArgumentClaims",
@@ -186,6 +190,202 @@ def score_texts_backend_dummy(model_type: str, model_name: str,
 
     return scores
 
+class LeafDataset(Dataset):
+    def __init__(self, items, tokenizer):
+        self.items = items
+        self.tokenizer = tokenizer
+    def __len__(self):
+        return len(self.items)
+    def __getitem__(self, idx):
+        text = self.items[idx]["text"]
+        enc = self.tokenizer(text, truncation=True, max_length=256)
+        # align with attributions.py expectations
+        enc["labels"] = 0
+        return enc
+
+def score_texts_encoder(model_type: str, model_name: str, 
+                        items: List[Dict[str, Any]]) \
+    -> Dict[Tuple[str, ...], Dict[str, float]]:
+    """
+    Integrates attribution-based scoring for encoder models:
+      - src/scorer/attributions.py using Ferret Benchmark (IG/Gradient/LIME/SHAP)
+    Returns dict[path] -> {"chain_prob": float, "comprehensiveness": float, "sufficiency": float, "premise": list}
+    """
+    scores: Dict[Tuple[str, ...], Dict[str, float]] = {}
+    logger.info(f"Scoring {len(items)} leaf items via {model_type} / {model_name}")
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=2,
+                                                               trust_remote_code=False,)
+    model.eval()
+
+    ds = LeafDataset(items, tokenizer)
+
+    # Run ferret benchmark and aggregate faithfulness per item
+    ferret_results = ferret_interpret_model(model, tokenizer, [ds[i] for i in range(len(ds))], label_key="labels")
+
+    # Map results back to paths (1-to-1 ordering)
+    for i, it in enumerate(items):
+        path = tuple(it["path"])
+        prem = it.get("premise", [])
+        instance = ferret_results[i]
+        # Aggregate across correct_results and incorrect_results if present
+        def agg_comprehensiveness_sufficiency(res_list):
+            comp_vals, suff_vals = [], []
+            for r in res_list:
+                # each r is a dict of metric results; pick AOPC or similar keys if present, else zero
+                comp_vals.append(float(r.get("comprehensiveness", 0.0)))
+                suff_vals.append(float(r.get("sufficiency", 0.0)))
+            return (
+                sum(comp_vals) / max(1, len(comp_vals)),
+                sum(suff_vals) / max(1, len(suff_vals)),
+            )
+        c1, s1 = agg_comprehensiveness_sufficiency(instance.get("correct_results", []))
+        c2, s2 = agg_comprehensiveness_sufficiency(instance.get("incorrect_results", []))
+        comprehensiveness = (c1 + c2) / max(1, (int(bool(instance.get("correct_results"))) + int(bool(instance.get("incorrect_results")))))
+        sufficiency = (s1 + s2) / max(1, (int(bool(instance.get("correct_results"))) + int(bool(instance.get("incorrect_results")))))
+
+        # Simple chain probability proxy: length-based if none available
+        text = it["text"]
+        segs = [s.strip() for s in text.replace("\n", " ").split(".") if s.strip()]
+        chain = 1.0
+        for s in (segs or [text]):
+            l = max(1, len(s.split()))
+            p = min(1.0, l / 50.0)
+            chain *= max(1e-6, p)
+        chain = max(0.0, min(1.0, chain))
+
+        scores[path] = {
+            "chain_prob": round(chain, 4),
+            "comprehensiveness": round(comprehensiveness or 0.0, 4),
+            "sufficiency": round(sufficiency or 0.0, 4),
+            "premise": prem,
+        }
+    return scores
+
+def score_texts_decoder(model_type: str, model_name: str, 
+                        items: List[Dict[str, Any]]) \
+    -> Dict[Tuple[str, ...], Dict[str, float]]:
+    """
+    Integrates attribution-based scoring for decoder models:
+        - src/scorer/attributions_llm.py using InSeq LLMAttribution and
+        - src/scorer/faithfulness_lm.py using AOPC faithfulness
+    Returns dict[path] -> {"chain_prob": float, "comprehensiveness": float, "sufficiency": float, "premise": list}
+    """
+    scores: Dict[Tuple[str, ...], Dict[str, float]] = {}
+    logger.info(f"Scoring {len(items)} leaf items via {model_type} / {model_name}")
+    # Use the inseq LLM pipeline to compute faithfulness per item
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    import torch
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    # Make sure tokens exist
+    # if tokenizer.unk_token is None:
+    #     tokenizer.unk_token = tokenizer.eos_token
+    # if tokenizer.mask_token is None:
+    #     tokenizer.mask_token = tokenizer.pad_token
+    # if tokenizer.pad_token is None:
+    #     tokenizer.pad_token = tokenizer.eos_token
+
+    # Reuse evaluation_model logic from attributions_llm but drive it per item
+    from src.scorer.attributions_llm import LLMAttribution
+    from src.scorer.faithfulness_lm import AOPC_Comprehensiveness_LLM_Evaluation, AOPC_Sufficiency_LLM_Evaluation
+
+    explainer = LLMAttribution(model, tokenizer, attribution_method="input_x_gradient")
+    aopc_comp_eval = AOPC_Comprehensiveness_LLM_Evaluation(model, tokenizer)
+    aopc_suff_eval = AOPC_Sufficiency_LLM_Evaluation(model, tokenizer)
+
+    def segments(text: str) -> List[str]:
+        segs = [s.strip() for s in text.replace("\n", " ").split(".") if s.strip()]
+        return segs or [text]
+
+    for it in items:
+        text = it["text"]
+        path = tuple(it["path"])
+        prem = it.get("premise", [])
+
+        # Build a minimal prompt: premise chain + leaf evidence
+        prompt_parts = []
+        for i, p in enumerate(prem):
+            prompt_parts.append(f"Premise {i+1}: {p}")
+        prompt_parts.append(f"Evidence: {text}")
+        prompt = "\n".join(prompt_parts) + "\nQuestion: Does the evidence support the claim? Answer:"
+
+        print(f"Scoring item at path {path} with prompt:\n{prompt}")
+
+        # inputs = tokenizer(prompt, return_tensors="pt")
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            padding="longest",     # ensures attention_mask is created
+            truncation=True,
+        )
+        # Safety: if attention_mask missing, create one
+        if "attention_mask" not in inputs:
+            inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
+
+        first_param_device = next(model.parameters()).device
+        inputs = {k: v.to(first_param_device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_length=inputs["input_ids"].shape[1] + 64,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        generated = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        logger.debug(f"Generated text for path {path}: {generated}")
+
+        # Attribution and faithfulness (AOPC)
+        explanations = explainer.compute_feature_importance(
+            prompt,
+            target=1,
+            generated_texts=None,
+            n_steps=5,
+            step_scores=["logit"],
+            include_eos_baseline=True,
+            output_step_attributions=True,
+            max_new_tokens=64,
+        )
+
+        avg_comp, avg_suff = 0.0, 0.0
+        for expl in explanations:
+            compr = aopc_comp_eval.compute_evaluation(expl, expl.target, token_position=None, 
+                                                    removal_args={"remove_tokens": False}, 
+                                                    remove_first_last=False, only_pos=True)
+            suff = aopc_suff_eval.compute_evaluation(expl, expl.target, token_position=None, 
+                                                    removal_args={"remove_tokens": False}, 
+                                                    remove_first_last=False, only_pos=True)
+            avg_comp += compr.score
+            avg_suff += suff.score
+        if explanations:
+            avg_comp /= len(explanations)
+            avg_suff /= len(explanations)
+
+        # Simple chain probability proxy by segment utility
+        chain = 1.0
+        for s in segments(text):
+            l = max(1, len(s.split()))
+            p = min(1.0, l / 50.0)
+            chain *= max(1e-6, p)
+        chain = max(0.0, min(1.0, chain))
+
+        scores[path] = {
+            "chain_prob": round(chain, 4),
+            "comprehensiveness": round(avg_comp or 0.0, 4),
+            "sufficiency": round(avg_suff or 0.0, 4),
+            "premise": prem,
+        }
+    return scores
+
+
 def score_texts_backend(model_type: str, model_name: str, 
                         items: List[Dict[str, Any]]) -> Dict[Tuple[str, ...], Dict[str, float]]:
     """
@@ -202,184 +402,13 @@ def score_texts_backend(model_type: str, model_name: str,
 
     try:
         if model_type == "encoder":
-            # Build a minimal dataset compatible with ferret_interpret_model
-            from transformers import AutoTokenizer, AutoModelForSequenceClassification
-            from torch.utils.data import Dataset
-            from transformers import default_data_collator
-            import torch
-
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
-            model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=2,
-                                                                       trust_remote_code=True,
-                                                                    )
-            model.eval()
-
-            class LeafDataset(Dataset):
-                def __init__(self, items, tokenizer):
-                    self.items = items
-                    self.tokenizer = tokenizer
-                def __len__(self):
-                    return len(self.items)
-                def __getitem__(self, idx):
-                    text = self.items[idx]["text"]
-                    enc = self.tokenizer(text, truncation=True, max_length=256)
-                    # align with attributions.py expectations
-                    enc["labels"] = 0
-                    return enc
-
-            ds = LeafDataset(items, tokenizer)
-            from src.scorer.attributions import ferret_interpret_model
-
-            # Run ferret benchmark and aggregate faithfulness per item
-            ferret_results = ferret_interpret_model(model, tokenizer, [ds[i] for i in range(len(ds))], label_key="labels")
-
-            # Map results back to paths (1-to-1 ordering)
-            for i, it in enumerate(items):
-                path = tuple(it["path"])
-                prem = it.get("premise", [])
-                instance = ferret_results[i]
-                # Aggregate across correct_results and incorrect_results if present
-                def agg_comprehensiveness_sufficiency(res_list):
-                    comp_vals, suff_vals = [], []
-                    for r in res_list:
-                        # each r is a dict of metric results; pick AOPC or similar keys if present, else zero
-                        comp_vals.append(float(r.get("comprehensiveness", 0.0)))
-                        suff_vals.append(float(r.get("sufficiency", 0.0)))
-                    return (
-                        sum(comp_vals) / max(1, len(comp_vals)),
-                        sum(suff_vals) / max(1, len(suff_vals)),
-                    )
-                c1, s1 = agg_comprehensiveness_sufficiency(instance.get("correct_results", []))
-                c2, s2 = agg_comprehensiveness_sufficiency(instance.get("incorrect_results", []))
-                comprehensiveness = (c1 + c2) / max(1, (int(bool(instance.get("correct_results"))) + int(bool(instance.get("incorrect_results")))))
-                sufficiency = (s1 + s2) / max(1, (int(bool(instance.get("correct_results"))) + int(bool(instance.get("incorrect_results")))))
-
-                # Simple chain probability proxy: length-based if none available
-                text = it["text"]
-                segs = [s.strip() for s in text.replace("\n", " ").split(".") if s.strip()]
-                chain = 1.0
-                for s in (segs or [text]):
-                    l = max(1, len(s.split()))
-                    p = min(1.0, l / 50.0)
-                    chain *= max(1e-6, p)
-                chain = max(0.0, min(1.0, chain))
-
-                scores[path] = {
-                    "chain_prob": round(chain, 4),
-                    "comprehensiveness": round(comprehensiveness or 0.0, 4),
-                    "sufficiency": round(sufficiency or 0.0, 4),
-                    "premise": prem,
-                }
+            # # Build a minimal dataset compatible with ferret_interpret_model
+            scores = score_texts_encoder(model_type, model_name, items)
 
         elif model_type == "decoder":
-            # Use the inseq LLM pipeline to compute faithfulness per item
-            from transformers import AutoTokenizer, AutoModelForCausalLM
-            import torch
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                device_map="auto",
-                trust_remote_code=True,
-            )
-            # Make sure tokens exist
-            # if tokenizer.unk_token is None:
-            #     tokenizer.unk_token = tokenizer.eos_token
-            # if tokenizer.mask_token is None:
-            #     tokenizer.mask_token = tokenizer.pad_token
-            # if tokenizer.pad_token is None:
-            #     tokenizer.pad_token = tokenizer.eos_token
+            # # Use the inseq LLM pipeline to compute faithfulness per item
+            scores = score_texts_decoder(model_type, model_name, items)
 
-            # Reuse evaluation_model logic from attributions_llm but drive it per item
-            from src.scorer.attributions_llm import LLMAttribution
-            from src.scorer.faithfulness_lm import AOPC_Comprehensiveness_LLM_Evaluation, AOPC_Sufficiency_LLM_Evaluation
-
-            explainer = LLMAttribution(model, tokenizer, attribution_method="input_x_gradient")
-            aopc_comp_eval = AOPC_Comprehensiveness_LLM_Evaluation(model, tokenizer)
-            aopc_suff_eval = AOPC_Sufficiency_LLM_Evaluation(model, tokenizer)
-
-            def segments(text: str) -> List[str]:
-                segs = [s.strip() for s in text.replace("\n", " ").split(".") if s.strip()]
-                return segs or [text]
-
-            for it in items:
-                text = it["text"]
-                path = tuple(it["path"])
-                prem = it.get("premise", [])
-
-                # Build a minimal prompt: premise chain + leaf evidence
-                prompt_parts = []
-                for i, p in enumerate(prem):
-                    prompt_parts.append(f"Premise {i+1}: {p}")
-                prompt_parts.append(f"Evidence: {text}")
-                prompt = "\n".join(prompt_parts) + "\nQuestion: Does the evidence support the claim? Answer:"
-
-                print(f"Scoring item at path {path} with prompt:\n{prompt}")
-
-                # inputs = tokenizer(prompt, return_tensors="pt")
-                inputs = tokenizer(
-                    prompt,
-                    return_tensors="pt",
-                    padding="longest",     # ensures attention_mask is created
-                    truncation=True,
-                )
-                # Safety: if attention_mask missing, create one
-                if "attention_mask" not in inputs:
-                    inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
-
-                first_param_device = next(model.parameters()).device
-                inputs = {k: v.to(first_param_device) for k, v in inputs.items()}
-
-                with torch.no_grad():
-                    outputs = model.generate(
-                        **inputs,
-                        max_length=inputs["input_ids"].shape[1] + 64,
-                        do_sample=False,
-                        pad_token_id=tokenizer.eos_token_id,
-                    )
-                generated = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-                logger.debug(f"Generated text for path {path}: {generated}")
-
-                # Attribution and faithfulness (AOPC)
-                explanations = explainer.compute_feature_importance(
-                    prompt,
-                    target=1,
-                    generated_texts=None,
-                    n_steps=5,
-                    step_scores=["logit"],
-                    include_eos_baseline=True,
-                    output_step_attributions=True,
-                    max_new_tokens=64,
-                )
-
-                avg_comp, avg_suff = 0.0, 0.0
-                for expl in explanations:
-                    compr = aopc_comp_eval.compute_evaluation(expl, expl.target, token_position=None, 
-                                                              removal_args={"remove_tokens": False}, 
-                                                              remove_first_last=False, only_pos=True)
-                    suff = aopc_suff_eval.compute_evaluation(expl, expl.target, token_position=None, 
-                                                             removal_args={"remove_tokens": False}, 
-                                                             remove_first_last=False, only_pos=True)
-                    avg_comp += compr.score
-                    avg_suff += suff.score
-                if explanations:
-                    avg_comp /= len(explanations)
-                    avg_suff /= len(explanations)
-
-                # Simple chain probability proxy by segment utility
-                chain = 1.0
-                for s in segments(text):
-                    l = max(1, len(s.split()))
-                    p = min(1.0, l / 50.0)
-                    chain *= max(1e-6, p)
-                chain = max(0.0, min(1.0, chain))
-
-                scores[path] = {
-                    "chain_prob": round(chain, 4),
-                    "comprehensiveness": round(avg_comp or 0.0, 4),
-                    "sufficiency": round(avg_suff or 0.0, 4),
-                    "premise": prem,
-                }
         else:
             raise ValueError("model_type must be 'encoder' or 'decoder'")
 
