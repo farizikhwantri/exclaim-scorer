@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Dict, Any, List, Tuple
 
 from torch.utils.data import Dataset
@@ -9,131 +10,459 @@ logger.setLevel(logging.INFO)
 
 from src.scorer.attributions import ferret_interpret_model
 
+# CONTAINER_KEYS = {
+#     "SubClaims", "Arguments", "ArgumentClaims",
+#     "ArgumentSubClaims", "Evidences",
+#     # lower class names
+#     "subclaims", "arguments", "argumentclaims",
+#     "argumentsubclaims", "evidences", "claims"  # added claims
+# }
+
+# def linearize_assurance_json(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+#     """
+#     Dummy traversal:
+#     - Start at Claim/MainClaim
+#     - Recurse through containers (SubClaims/Arguments/.../Evidences)
+#     - Collect intermediate node descriptions into `premise`
+#     - Emit items only for Evidence (leaf) nodes with their description as `text`
+#     """
+#     out: List[Dict[str, Any]] = []
+
+#     def is_container_key(k: str) -> bool:
+#         return k in CONTAINER_KEYS
+
+#     def node_desc(node: Dict[str, Any]) -> str | None:
+#         if isinstance(node, dict):
+#             return node.get("description")
+#         return None
+
+#     def walk(node: Any, path: List[str], premise: List[str]):
+#         # Evidence leaf: dict with description and no child containers
+#         if isinstance(node, dict):
+#             desc = node_desc(node)
+#             has_children = any(is_container_key(k) for k in node.keys())
+#             if desc is not None and not has_children:
+#                 out.append({
+#                     "path": path.copy(),
+#                     "text": str(desc),
+#                     "premise": premise.copy(),
+#                     "node_type": path[-1] if path else "Node",
+#                 })
+#                 return
+
+#             # push current description to premise if present (and not an Evidence leaf yet)
+#             if desc:
+#                 premise.append(str(desc))
+
+#             # recurse into containers and nested keyed nodes
+#             for k, v in node.items():
+#                 if is_container_key(k):
+#                     # containers can be list or dict
+#                     if isinstance(v, list):
+#                         for item in v:
+#                             if isinstance(item, dict):
+#                                 for ck, cv in item.items():
+#                                     walk(cv, path + [k, ck], premise)
+#                     else:
+#                         walk(v, path + [k], premise)
+#                 elif isinstance(v, dict):
+#                     walk(v, path + [k], premise)
+#                 elif isinstance(v, list):
+#                     for item in v:
+#                         walk(item, path + [k], premise)
+
+#             # pop current desc when unwinding
+#             if desc:
+#                 premise.pop()
+
+#         elif isinstance(node, list):
+#             for item in node:
+#                 walk(item, path, premise)
+
+#     # Choose root
+#     if "Claim" in doc and isinstance(doc["Claim"], dict):
+#         walk(doc["Claim"], ["Claim"], [])
+#     elif "MainClaim" in doc and isinstance(doc["MainClaim"], dict):
+#         walk(doc["MainClaim"], ["MainClaim"], [])
+#     else:
+#         # fallback: traverse whole doc
+#         walk(doc, [], [])
+
+#     return out
+
+# Containers (case-insensitive, singular + plural)
 CONTAINER_KEYS = {
-    "SubClaims", "Arguments", "ArgumentClaims",
-    "ArgumentSubClaims", "Evidences"
+    "claims", "claim",
+    "subclaims", "subclaim",
+    "arguments", "argumentclaims", "argumentsubclaims",
+    "evidences", "evidence",
 }
+
+_INDEX_RE = re.compile(r"^\[(\d+)\]$")
+
+def _norm_key(k: str) -> str:
+    return k.lower() if isinstance(k, str) else k
+
+def is_container_key(k: str) -> bool:
+    return _norm_key(k) in CONTAINER_KEYS
+
+# def _ci_get(d: Dict[str, Any], key: str):
+#     if key in d:
+#         return d[key]
+#     kl = key.lower()
+#     for k, v in d.items():
+#         if isinstance(k, str) and k.lower() == kl:
+#             return v
+#     return None
+
+# def _first_str_ci(node: Dict[str, Any], keys: List[str]) -> str | None:
+#     if not isinstance(node, dict):
+#         return None
+#     for k in keys:
+#         v = _ci_get(node, k)
+#         if isinstance(v, str) and v.strip():
+#             return v.strip()
+#     return None
+
+# def linearize_assurance_json(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+#     """
+#     Unify traversal for:
+#       - Old format: {"Claims":[{"Claim":{...,"Evidences":[{"Evidence1":{...}}]}}]}
+#       - New format: {"claims":[{"claim":"...", "subclaims":[{"subclaim":"...","evidence":[{Type,Description}, ...]}]}]}
+#     Rules:
+#       - claim/subclaim (string or dict with description) contribute to premise only.
+#       - evidence/evidences list items are the leaves.
+#       - evidence item text = Description (or description/text) optionally prefixed by Type.
+#       - keys matched case-insensitively; list indices included in path as "[i]".
+#     """
+#     out: List[Dict[str, Any]] = []
+
+#     def evidence_text(item: Any) -> str | None:
+#         # Accept string items or dicts with Description/description/text and optional Type
+#         if isinstance(item, str):
+#             s = item.strip()
+#             return s or None
+#         if isinstance(item, dict):
+#             desc = _first_str_ci(item, ["description", "text"])
+#             typ = _first_str_ci(item, ["type", "name", "title"])
+#             if desc and typ:
+#                 return f"{typ}: {desc}"
+#             return desc or typ
+#         return None
+
+#     def premise_ctx(node: Any) -> List[str]:
+#         if not isinstance(node, dict):
+#             return []
+#         ctx: List[str] = []
+#         # claim/subclaim can be string or dict with description
+#         claim = _ci_get(node, "claim")
+#         if isinstance(claim, str) and claim.strip():
+#             ctx.append(claim.strip())
+#         elif isinstance(claim, dict):
+#             d = _first_str_ci(claim, ["description", "text"])
+#             if d:
+#                 ctx.append(d)
+#         subclaim = _ci_get(node, "subclaim")
+#         if isinstance(subclaim, str) and subclaim.strip():
+#             ctx.append(subclaim.strip())
+#         elif isinstance(subclaim, dict):
+#             d = _first_str_ci(subclaim, ["description", "text"])
+#             if d:
+#                 ctx.append(d)
+#         return ctx
+
+#     def walk(node: Any, path: List[str], premise: List[str]):
+#         # Emit only inside evidence containers; otherwise accumulate context and recurse.
+#         if isinstance(node, dict):
+#             # If this dict contains an evidence container, emit from that container
+#             for k, v in node.items():
+#                 nk = _norm_key(k)
+#                 if nk in ("evidence", "evidences") and isinstance(v, list):
+#                     for i, item in enumerate(v):
+#                         txt = evidence_text(item)
+#                         if txt:
+#                             out.append({
+#                                 "path": path + [k, f"[{i}]"],
+#                                 "text": txt,
+#                                 "premise": premise.copy(),
+#                                 "node_type": k,
+#                             })
+#             # Accumulate premise from claim/subclaim on this node
+#             ctx = premise_ctx(node)
+#             if ctx:
+#                 premise.extend(ctx)
+#             # Recurse into containers and nested structures
+#             for k, v in node.items():
+#                 nk = _norm_key(k)
+#                 if nk in CONTAINER_KEYS:
+#                     if isinstance(v, list):
+#                         for i, item in enumerate(v):
+#                             if isinstance(item, dict) and len(item) == 1:
+#                                 # Wrapper item: {"Claim": {...}} / {"Evidence1": {...}}
+#                                 for ck, cv in item.items():
+#                                     walk(cv, path + [k, ck], premise)
+#                             else:
+#                                 walk(item, path + [k, f"[{i}]"], premise)
+#                     else:
+#                         walk(v, path + [k], premise)
+#                 else:
+#                     if isinstance(v, dict):
+#                         walk(v, path + [k], premise)
+#                     elif isinstance(v, list):
+#                         for i, item in enumerate(v):
+#                             walk(item, path + [k, f"[{i}]"], premise)
+#             if ctx:
+#                 for _ in range(len(ctx)):
+#                     premise.pop()
+#         elif isinstance(node, list):
+#             for i, item in enumerate(node):
+#                 walk(item, path + [f"[{i}]"], premise)
+
+#     walk(doc, [], [])
+#     logger.info(f"Linearized to {len(out)} items")
+#     return out
+
+# def inject_scores(original: Dict[str, Any], 
+#                   node_scores: Dict[Tuple[str, ...], Dict[str, float]]) -> Dict[str, Any]:
+#     """
+#     Inject scores at leaf nodes referenced by `path` tuples.
+#     Adds edge_scores with comprehensiveness/sufficiency and includes `premise` if provided.
+#     """
+#     def is_container_key(k: str) -> bool:
+#         return k in CONTAINER_KEYS
+
+#     def get_at_path(root: Any, path: List[str]) -> Any:
+#         cur = root
+#         i = 0
+#         while i < len(path):
+#             p = path[i]
+#             if isinstance(cur, dict) and p in cur:
+#                 cur = cur[p]
+#                 i += 1
+#             elif isinstance(cur, list):
+#                 # list items are dicts with single keyed children; pick matching key
+#                 found = None
+#                 for item in cur:
+#                     if isinstance(item, dict) and i < len(path):
+#                         key = path[i + 1] if (i < len(path) - 1 and path[i] in CONTAINER_KEYS) else path[i]
+#                         if key in item:
+#                             found = item[key]
+#                             # advance i by 2 if we matched container + child
+#                             i += 2 if (i < len(path) - 1 and path[i] in CONTAINER_KEYS) else 1
+#                             break
+#                 cur = found if found is not None else cur
+#             else:
+#                 break
+#         return cur
+
+#     def is_leaf_node(node: Any) -> bool:
+#         return isinstance(node, dict) and not any(is_container_key(k) for k in node.keys())
+
+#     for path_tuple, scores in node_scores.items():
+#         path = list(path_tuple)
+#         node = get_at_path(original, path)
+#         if is_leaf_node(node):
+#             parent = path[-2] if len(path) >= 2 else ""
+#             node.setdefault("edge_scores", [])
+#             payload = {
+#                 "parent": parent,
+#                 "comprehensiveness_score": round(scores.get("comprehensiveness", 0.0), 4),
+#                 "sufficiency_score": round(scores.get("sufficiency", 0.0), 4),
+#             }
+#             # include premise if backend provided it
+#             if "premise" in scores and isinstance(scores["premise"], list):
+#                 payload["premise"] = scores["premise"]
+#             node["edge_scores"].append(payload)
+#     return original
 
 def linearize_assurance_json(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Dummy traversal:
-    - Start at Claim/MainClaim
-    - Recurse through containers (SubClaims/Arguments/.../Evidences)
-    - Collect intermediate node descriptions into `premise`
-    - Emit items only for Evidence (leaf) nodes with their description as `text`
+    Unified traversal:
+      - Old: {"MainClaim": {"Evidences": [{"Evidence1": {...}}]}}
+      - New: {"claims":[{"subclaims":[{"evidence":[{Type,Description}, ...]}]}]}
+    Emits leaves from evidence/evidences containers, keeps claim/subclaim as premise.
     """
     out: List[Dict[str, Any]] = []
 
-    def is_container_key(k: str) -> bool:
-        return k in CONTAINER_KEYS
-
-    def node_desc(node: Dict[str, Any]) -> str | None:
-        if isinstance(node, dict):
-            return node.get("description")
+    def _ci_get(d: Dict[str, Any], key: str):
+        if key in d:
+            return d[key]
+        kl = key.lower()
+        for k, v in d.items():
+            if isinstance(k, str) and k.lower() == kl:
+                return v
         return None
 
+    def _first_str_ci(node: Dict[str, Any], keys: List[str]) -> str | None:
+        if not isinstance(node, dict):
+            return None
+        for k in keys:
+            v = _ci_get(node, k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return None
+
+    def evidence_text(item: Any) -> str | None:
+        # string item
+        if isinstance(item, str):
+            s = item.strip()
+            return s or None
+        # wrapper: {"Evidence1": {...}}
+        if isinstance(item, dict) and len(item) == 1:
+            inner = next(iter(item.values()))
+            return evidence_text(inner)
+        # plain dict: {Type, Description}
+        if isinstance(item, dict):
+            desc = _first_str_ci(item, ["description", "text"])
+            typ = _first_str_ci(item, ["type", "name", "title"])
+            if desc and typ:
+                return f"{typ}: {desc}"
+            return desc or typ
+        return None
+
+    def premise_ctx(node: Any) -> List[str]:
+        if not isinstance(node, dict):
+            return []
+        ctx: List[str] = []
+        claim = _ci_get(node, "claim")
+        if isinstance(claim, str) and claim.strip():
+            ctx.append(claim.strip())
+        elif isinstance(claim, dict):
+            d = _first_str_ci(claim, ["description", "text"])
+            if d:
+                ctx.append(d)
+        subclaim = _ci_get(node, "subclaim")
+        if isinstance(subclaim, str) and subclaim.strip():
+            ctx.append(subclaim.strip())
+        elif isinstance(subclaim, dict):
+            d = _first_str_ci(subclaim, ["description", "text"])
+            if d:
+                ctx.append(d)
+        return ctx
+
     def walk(node: Any, path: List[str], premise: List[str]):
-        # Evidence leaf: dict with description and no child containers
         if isinstance(node, dict):
-            desc = node_desc(node)
-            has_children = any(is_container_key(k) for k in node.keys())
-            if desc is not None and not has_children:
-                out.append({
-                    "path": path.copy(),
-                    "text": str(desc),
-                    "premise": premise.copy(),
-                    "node_type": path[-1] if path else "Node",
-                })
-                return
-
-            # push current description to premise if present (and not an Evidence leaf yet)
-            if desc:
-                premise.append(str(desc))
-
-            # recurse into containers and nested keyed nodes
+            # emit from evidence/evidences containers
             for k, v in node.items():
-                if is_container_key(k):
-                    # containers can be list or dict
+                nk = _norm_key(k)
+                if nk in ("evidence", "evidences") and isinstance(v, list):
+                    for i, item in enumerate(v):
+                        txt = evidence_text(item)
+                        if txt:
+                            # keep wrapper child key in path if present; else use index
+                            if isinstance(item, dict) and len(item) == 1:
+                                ck = next(iter(item.keys()))
+                                out.append({
+                                    "path": path + [k, ck],
+                                    "text": txt,
+                                    "premise": premise.copy(),
+                                    "node_type": k,
+                                })
+                            else:
+                                out.append({
+                                    "path": path + [k, f"[{i}]"],
+                                    "text": txt,
+                                    "premise": premise.copy(),
+                                    "node_type": k,
+                                })
+            # accumulate premise and recurse
+            ctx = premise_ctx(node)
+            if ctx:
+                premise.extend(ctx)
+            for k, v in node.items():
+                nk = _norm_key(k)
+                if nk in CONTAINER_KEYS:
                     if isinstance(v, list):
-                        for item in v:
-                            if isinstance(item, dict):
+                        for i, item in enumerate(v):
+                            if isinstance(item, dict) and len(item) == 1:
                                 for ck, cv in item.items():
                                     walk(cv, path + [k, ck], premise)
+                            else:
+                                walk(item, path + [k, f"[{i}]"], premise)
                     else:
                         walk(v, path + [k], premise)
-                elif isinstance(v, dict):
-                    walk(v, path + [k], premise)
-                elif isinstance(v, list):
-                    for item in v:
-                        walk(item, path + [k], premise)
-
-            # pop current desc when unwinding
-            if desc:
-                premise.pop()
-
+                else:
+                    if isinstance(v, dict):
+                        walk(v, path + [k], premise)
+                    elif isinstance(v, list):
+                        for i, item in enumerate(v):
+                            walk(item, path + [k, f"[{i}]"], premise)
+            if ctx:
+                for _ in range(len(ctx)):
+                    premise.pop()
         elif isinstance(node, list):
-            for item in node:
-                walk(item, path, premise)
+            for i, item in enumerate(node):
+                walk(item, path + [f"[{i}]"], premise)
 
-    # Choose root
-    if "Claim" in doc and isinstance(doc["Claim"], dict):
-        walk(doc["Claim"], ["Claim"], [])
-    elif "MainClaim" in doc and isinstance(doc["MainClaim"], dict):
-        walk(doc["MainClaim"], ["MainClaim"], [])
-    else:
-        # fallback: traverse whole doc
-        walk(doc, [], [])
-
+    walk(doc, [], [])
+    logger.info(f"Linearized to {len(out)} items")
     return out
 
 def inject_scores(original: Dict[str, Any], 
                   node_scores: Dict[Tuple[str, ...], Dict[str, float]]) -> Dict[str, Any]:
     """
-    Inject scores at leaf nodes referenced by `path` tuples.
-    Adds edge_scores with comprehensiveness/sufficiency and includes `premise` if provided.
+    Index-aware, case-insensitive path resolution; supports wrapper dicts in lists.
     """
-    def is_container_key(k: str) -> bool:
-        return k in CONTAINER_KEYS
+    idx_re = re.compile(r"^\[(\d+)\]$")
+
+    def get_dict_value_ci(d: Dict[str, Any], key: str):
+        if key in d:
+            return key, d[key]
+        kl = key.lower() if isinstance(key, str) else key
+        for k in d.keys():
+            if isinstance(k, str) and k.lower() == kl:
+                return k, d[k]
+        return None, None
 
     def get_at_path(root: Any, path: List[str]) -> Any:
         cur = root
         i = 0
         while i < len(path):
-            p = path[i]
-            if isinstance(cur, dict) and p in cur:
-                cur = cur[p]
-                i += 1
-            elif isinstance(cur, list):
-                # list items are dicts with single keyed children; pick matching key
-                found = None
-                for item in cur:
-                    if isinstance(item, dict) and i < len(path):
-                        key = path[i + 1] if (i < len(path) - 1 and path[i] in CONTAINER_KEYS) else path[i]
-                        if key in item:
-                            found = item[key]
-                            # advance i by 2 if we matched container + child
-                            i += 2 if (i < len(path) - 1 and path[i] in CONTAINER_KEYS) else 1
-                            break
-                cur = found if found is not None else cur
-            else:
+            tok = path[i]
+            m = idx_re.match(tok) if isinstance(tok, str) else None
+            if m and isinstance(cur, list):
+                idx = int(m.group(1))
+                if 0 <= idx < len(cur):
+                    cur = cur[idx]
+                    i += 1
+                    continue
                 break
+            if isinstance(cur, dict):
+                kk, vv = get_dict_value_ci(cur, tok)
+                if kk is not None:
+                    cur = vv
+                    i += 1
+                    continue
+                break
+            if isinstance(cur, list) and isinstance(tok, str):
+                matched = False
+                for item in cur:
+                    if isinstance(item, dict) and len(item) == 1:
+                        only_key = next(iter(item.keys()))
+                        if isinstance(only_key, str) and only_key.lower() == tok.lower():
+                            cur = item[only_key]
+                            i += 1
+                            matched = True
+                            break
+                if matched:
+                    continue
+                break
+            break
         return cur
 
     def is_leaf_node(node: Any) -> bool:
-        return isinstance(node, dict) and not any(is_container_key(k) for k in node.keys())
+        return isinstance(node, dict) and not any(_norm_key(k) in CONTAINER_KEYS for k in node.keys())
 
     for path_tuple, scores in node_scores.items():
-        path = list(path_tuple)
-        node = get_at_path(original, path)
+        node = get_at_path(original, list(path_tuple))
         if is_leaf_node(node):
-            parent = path[-2] if len(path) >= 2 else ""
+            parent = list(path_tuple)[-2] if len(path_tuple) >= 2 else ""
             node.setdefault("edge_scores", [])
             payload = {
                 "parent": parent,
                 "comprehensiveness_score": round(scores.get("comprehensiveness", 0.0), 4),
                 "sufficiency_score": round(scores.get("sufficiency", 0.0), 4),
             }
-            # include premise if backend provided it
             if "premise" in scores and isinstance(scores["premise"], list):
                 payload["premise"] = scores["premise"]
             node["edge_scores"].append(payload)
